@@ -1,0 +1,11 @@
+.git
+.gradle
+.idea
+.vscode
+build
+video
+*.md
+*.drawio
+.gitignore
+.dockerignore
+.claude

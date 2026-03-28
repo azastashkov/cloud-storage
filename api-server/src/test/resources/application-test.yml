@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    database-platform: org.hibernate.dialect.H2Dialect
+  sql:
+    init:
+      mode: never
+  cache:
+    type: none
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration
+block-server:
+  url: http://localhost:8081
+cold-storage:
+  threshold-days: 30
+minio:
+  endpoint: http://localhost:9000
+  access-key: test
+  secret-key: test
+  block-bucket: test-bucket
+  cold-bucket: test-cold
