@@ -376,8 +376,8 @@
       },
       "targets": [
         {
-          "expr": "cloud_storage_compression_ratio",
-          "legendFormat": "{{instance}}",
+          "expr": "cloud_storage_compression_ratio_sum / cloud_storage_compression_ratio_count",
+          "legendFormat": "avg {{instance}}",
           "refId": "A"
         }
       ],
