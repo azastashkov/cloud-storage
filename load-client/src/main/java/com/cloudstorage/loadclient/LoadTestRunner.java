@@ -33,6 +33,10 @@ public class LoadTestRunner {
     private final Map<String, Integer> baselineRevisionCounts = new HashMap<>();
     private boolean conflictTestCompleted = false;
     private String conflictTestDetails = "";
+    private boolean deltaSyncMetricOk = false;
+    private boolean syncConflictsMetricOk = false;
+    private boolean coldStorageMetricOk = false;
+    private boolean notificationsMetricOk = false;
 
     private long uploadPhaseTotalMs = 0;
     private long reuploadPhaseTotalMs = 0;
@@ -99,6 +103,14 @@ public class LoadTestRunner {
         log.info("");
         log.info("=== PHASE 5: CONCURRENT UPLOAD (CONFLICT TEST) ===");
         runConflictTest(videos);
+
+        log.info("");
+        log.info("=== PHASE 6: COLD STORAGE ===");
+        pass &= runColdStoragePhase();
+
+        log.info("");
+        log.info("=== PHASE 7: METRICS VERIFICATION ===");
+        pass &= runMetricsVerificationPhase();
 
         return pass;
     }
@@ -277,7 +289,78 @@ public class LoadTestRunner {
         }
     }
 
-    // --- Phase 6: Report ---
+    // --- Phase 6: Cold Storage ---
+    private boolean runColdStoragePhase() {
+        try {
+            boolean triggered = http.triggerColdStorage(0);
+            if (triggered) {
+                log.info("Cold storage migration triggered successfully (days=0)");
+            } else {
+                log.error("Failed to trigger cold storage migration");
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            log.error("Exception triggering cold storage: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    // --- Phase 7: Metrics Verification ---
+    private boolean runMetricsVerificationPhase() {
+        boolean allOk = true;
+
+        // Wait for Prometheus to scrape the latest metrics (scrape interval is 15s)
+        try {
+            Thread.sleep(16000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        try {
+            double deltaSyncSaved = http.queryMetricTotal("cloud_storage_delta_sync_blocks_saved_total");
+            deltaSyncMetricOk = deltaSyncSaved > 0;
+            log.info("Delta Sync Blocks Saved: {} ({})", deltaSyncSaved, deltaSyncMetricOk ? "OK" : "FAIL");
+            if (!deltaSyncMetricOk) allOk = false;
+        } catch (Exception e) {
+            log.error("Failed to query delta sync metric: {}", e.getMessage());
+            allOk = false;
+        }
+
+        try {
+            double syncConflicts = http.queryMetricTotal("cloud_storage_sync_conflicts_total");
+            syncConflictsMetricOk = syncConflicts > 0;
+            log.info("Sync Conflicts: {} ({})", syncConflicts, syncConflictsMetricOk ? "OK" : "FAIL");
+            if (!syncConflictsMetricOk) allOk = false;
+        } catch (Exception e) {
+            log.error("Failed to query sync conflicts metric: {}", e.getMessage());
+            allOk = false;
+        }
+
+        try {
+            double coldStorageMoves = http.queryMetricTotal("cloud_storage_cold_storage_moves_total");
+            coldStorageMetricOk = coldStorageMoves > 0;
+            log.info("Cold Storage Moves: {} ({})", coldStorageMoves, coldStorageMetricOk ? "OK" : "FAIL");
+            if (!coldStorageMetricOk) allOk = false;
+        } catch (Exception e) {
+            log.error("Failed to query cold storage metric: {}", e.getMessage());
+            allOk = false;
+        }
+
+        try {
+            double notifications = http.queryMetricTotal("cloud_storage_notifications_received_total");
+            notificationsMetricOk = notifications > 0;
+            log.info("Notifications Received: {} ({})", notifications, notificationsMetricOk ? "OK" : "FAIL");
+            if (!notificationsMetricOk) allOk = false;
+        } catch (Exception e) {
+            log.error("Failed to query notifications metric: {}", e.getMessage());
+            allOk = false;
+        }
+
+        return allOk;
+    }
+
+    // --- Report ---
     public void printReport(int fileCount, boolean overallPass) {
         double totalDataMB = totalDataBytes / (1024.0 * 1024.0);
         double uploadTimeSec = uploadPhaseTotalMs / 1000.0;
@@ -329,6 +412,13 @@ public class LoadTestRunner {
 
         System.out.println("CONFLICT TEST:");
         System.out.printf("  Concurrent uploads completed: %s%n", conflictTestCompleted ? "YES" : "NO");
+        System.out.println();
+
+        System.out.println("METRICS:");
+        System.out.printf("  Delta Sync Blocks Saved > 0: %s%n", deltaSyncMetricOk ? "YES" : "NO");
+        System.out.printf("  Sync Conflicts > 0: %s%n", syncConflictsMetricOk ? "YES" : "NO");
+        System.out.printf("  Cold Storage Moves > 0: %s%n", coldStorageMetricOk ? "YES" : "NO");
+        System.out.printf("  Notifications Received > 0: %s%n", notificationsMetricOk ? "YES" : "NO");
         System.out.println();
 
         System.out.printf("OVERALL: %s%n", overallPass ? "PASS" : "FAIL");

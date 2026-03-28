@@ -192,6 +192,86 @@ public class HttpHelper {
         return baos.toByteArray();
     }
 
+    /**
+     * Query a Prometheus counter total via the Prometheus HTTP API.
+     * Uses sum() to aggregate across all instances.
+     */
+    public double queryMetricTotal(String metricName) throws IOException, InterruptedException {
+        String query = "sum(" + metricName + ")";
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(targetHost + "/prometheus/api/v1/query?query=" + query))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            return -1;
+        }
+
+        JsonNode json = objectMapper.readTree(response.body());
+        JsonNode result = json.path("data").path("result");
+        if (result.isEmpty()) {
+            return 0;
+        }
+        return result.get(0).path("value").get(1).asDouble();
+    }
+
+    /**
+     * Trigger cold storage migration via POST /internal/cold-storage/trigger?days=0.
+     */
+    public boolean triggerColdStorage(int days) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(targetHost + "/internal/cold-storage/trigger?days=" + days))
+                .timeout(Duration.ofSeconds(30))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        return response.statusCode() >= 200 && response.statusCode() < 300;
+    }
+
+    /**
+     * List conflicts via GET /files/conflicts?userId={userId}.
+     */
+    public ConflictsResult listConflicts(UUID userId) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(targetHost + "/files/conflicts?userId=" + userId))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            return new ConflictsResult(false, 0, null,
+                    "HTTP " + response.statusCode() + ": " + response.body());
+        }
+
+        JsonNode json = objectMapper.readTree(response.body());
+        int count = json.size();
+        String[] ids = new String[count];
+        for (int i = 0; i < count; i++) {
+            ids[i] = json.get(i).get("id").asText();
+        }
+        return new ConflictsResult(true, count, ids, null);
+    }
+
+    /**
+     * Resolve a conflict via POST /files/conflicts/{id}/resolve?resolution={resolution}.
+     */
+    public boolean resolveConflict(String conflictId, String resolution)
+            throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(targetHost + "/files/conflicts/" + conflictId
+                        + "/resolve?resolution=" + resolution))
+                .timeout(Duration.ofSeconds(10))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        return response.statusCode() >= 200 && response.statusCode() < 300;
+    }
+
     // --- Result records ---
 
     public record UploadResult(
@@ -215,6 +295,13 @@ public class HttpHelper {
             boolean success,
             int count,
             int[] versions,
+            String error
+    ) {}
+
+    public record ConflictsResult(
+            boolean success,
+            int count,
+            String[] ids,
             String error
     ) {}
 }

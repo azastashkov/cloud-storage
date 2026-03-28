@@ -62,4 +62,5 @@ public class FileController {
         conflictResolutionService.resolveConflict(conflictId, resolution);
         return ResponseEntity.noContent().build();
     }
+
 }

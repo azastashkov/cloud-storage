@@ -4,9 +4,11 @@ import com.cloudstorage.blockserver.entity.BlockEntity;
 import com.cloudstorage.blockserver.entity.FileEntity;
 import com.cloudstorage.blockserver.entity.FileVersionBlockEntity;
 import com.cloudstorage.blockserver.entity.FileVersionEntity;
+import com.cloudstorage.blockserver.entity.SyncConflictEntity;
 import com.cloudstorage.blockserver.repository.FileRepository;
 import com.cloudstorage.blockserver.repository.FileVersionBlockRepository;
 import com.cloudstorage.blockserver.repository.FileVersionRepository;
+import com.cloudstorage.blockserver.repository.SyncConflictRepository;
 import com.cloudstorage.common.dto.UploadResponse;
 import com.cloudstorage.common.event.FileChangeEvent;
 import io.micrometer.core.instrument.Counter;
@@ -35,8 +37,11 @@ public class FileUploadService {
     private final FileRepository fileRepository;
     private final FileVersionRepository fileVersionRepository;
     private final FileVersionBlockRepository fileVersionBlockRepository;
+    private final SyncConflictRepository syncConflictRepository;
     private final RabbitTemplate rabbitTemplate;
     private final Counter fileUploadsCounter;
+    private final Counter deltaSyncBlocksSavedCounter;
+    private final Counter syncConflictsCounter;
     private final DistributionSummary uploadSizeSummary;
     private final DistributionSummary compressionRatioSummary;
 
@@ -47,6 +52,7 @@ public class FileUploadService {
                              FileRepository fileRepository,
                              FileVersionRepository fileVersionRepository,
                              FileVersionBlockRepository fileVersionBlockRepository,
+                             SyncConflictRepository syncConflictRepository,
                              RabbitTemplate rabbitTemplate,
                              MeterRegistry meterRegistry) {
         this.blockSplitterService = blockSplitterService;
@@ -56,9 +62,16 @@ public class FileUploadService {
         this.fileRepository = fileRepository;
         this.fileVersionRepository = fileVersionRepository;
         this.fileVersionBlockRepository = fileVersionBlockRepository;
+        this.syncConflictRepository = syncConflictRepository;
         this.rabbitTemplate = rabbitTemplate;
         this.fileUploadsCounter = Counter.builder("cloud_storage_file_uploads_total")
                 .description("Total file uploads")
+                .register(meterRegistry);
+        this.deltaSyncBlocksSavedCounter = Counter.builder("cloud_storage_delta_sync_blocks_saved_total")
+                .description("Total blocks saved via delta sync")
+                .register(meterRegistry);
+        this.syncConflictsCounter = Counter.builder("cloud_storage_sync_conflicts_total")
+                .description("Total sync conflicts detected")
                 .register(meterRegistry);
         this.uploadSizeSummary = DistributionSummary.builder("cloud_storage_upload_size_bytes")
                 .description("Upload file sizes")
@@ -149,6 +162,21 @@ public class FileUploadService {
         versionEntity.setBaseVersion(expectedVersion);
         versionEntity = fileVersionRepository.save(versionEntity);
 
+        if (isConflict) {
+            FileVersionEntity remoteVersion = fileVersionRepository
+                    .findByFileIdAndVersionNumber(fileEntity.getId(), fileEntity.getLatestVersion())
+                    .orElse(null);
+            if (remoteVersion != null) {
+                SyncConflictEntity conflict = new SyncConflictEntity();
+                conflict.setFileId(fileEntity.getId());
+                conflict.setUserId(userId);
+                conflict.setLocalVersionId(versionEntity.getId());
+                conflict.setRemoteVersionId(remoteVersion.getId());
+                syncConflictRepository.save(conflict);
+            }
+            syncConflictsCounter.increment();
+        }
+
         // Create block-version mappings
         for (int i = 0; i < storedBlocks.length; i++) {
             FileVersionBlockEntity versionBlock = new FileVersionBlockEntity();
@@ -163,6 +191,9 @@ public class FileUploadService {
         fileRepository.save(fileEntity);
 
         fileUploadsCounter.increment();
+        if (deduplicatedCount > 0) {
+            deltaSyncBlocksSavedCounter.increment(deduplicatedCount);
+        }
         uploadSizeSummary.record(fileSize);
         if (totalOriginalSize > 0) {
             compressionRatioSummary.record((double) totalCompressedSize / totalOriginalSize);

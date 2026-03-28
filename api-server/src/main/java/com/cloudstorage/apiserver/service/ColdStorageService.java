@@ -44,7 +44,11 @@ public class ColdStorageService {
 
     @Scheduled(fixedRate = 3600000)
     public void moveBlocksToColdStorage() {
-        LocalDateTime threshold = LocalDateTime.now().minusDays(thresholdDays);
+        moveBlocksOlderThan(thresholdDays);
+    }
+
+    public void moveBlocksOlderThan(int days) {
+        LocalDateTime threshold = LocalDateTime.now().minusDays(days);
         List<BlockEntity> hotBlocks = blockRepository
                 .findByStorageTierAndLastAccessedAtBefore("HOT", threshold);
 
