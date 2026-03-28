@@ -8,7 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,6 +30,7 @@ public class LoadTestRunner {
     private final List<FileUploadRecord> reuploadRecords = new ArrayList<>();
     private final List<FileDownloadRecord> downloadRecords = new ArrayList<>();
     private final List<FileRevisionRecord> revisionRecords = new ArrayList<>();
+    private final Map<String, Integer> baselineRevisionCounts = new HashMap<>();
     private boolean conflictTestCompleted = false;
     private String conflictTestDetails = "";
 
@@ -65,6 +68,17 @@ public class LoadTestRunner {
      */
     public boolean runAllPhases(List<Path> videos) {
         boolean pass = true;
+
+        // Snapshot existing revision counts so the test is idempotent across runs
+        for (Path video : videos) {
+            String filename = video.getFileName().toString();
+            try {
+                HttpHelper.RevisionsResult baseline = http.listRevisions(filename, 10000);
+                baselineRevisionCounts.put(filename, baseline.success() ? baseline.count() : 0);
+            } catch (Exception e) {
+                baselineRevisionCounts.put(filename, 0);
+            }
+        }
 
         log.info("");
         log.info("=== PHASE 1: UPLOAD ===");
@@ -197,14 +211,17 @@ public class LoadTestRunner {
         for (Path video : videos) {
             String filename = video.getFileName().toString();
             try {
-                HttpHelper.RevisionsResult result = http.listRevisions(filename, 10);
+                HttpHelper.RevisionsResult result = http.listRevisions(filename, 10000);
                 revisionRecords.add(new FileRevisionRecord(filename, result));
 
                 if (result.success()) {
                     String versionsStr = Arrays.toString(result.versions());
                     log.info("Revisions for {}: count={}, versions={}", filename, result.count(), versionsStr);
-                    if (result.count() != 2) {
-                        log.warn("Expected 2 revisions for {}, got {}", filename, result.count());
+                    int baseline = baselineRevisionCounts.getOrDefault(filename, 0);
+                    int expected = baseline + 2;
+                    if (result.count() != expected) {
+                        log.warn("Expected {} revisions for {} (baseline {}+2), got {}",
+                                expected, filename, baseline, result.count());
                         allSuccess = false;
                     }
                 } else {
@@ -277,7 +294,8 @@ public class LoadTestRunner {
         int dedupPercent = allDedup ? 100 : calculateDedupPercent();
         boolean allSizesMatch = downloadRecords.stream().allMatch(FileDownloadRecord::sizeMatch);
         boolean allRevisions = revisionRecords.stream().allMatch(r ->
-                r.result().success() && r.result().count() == 2);
+                r.result().success() && r.result().count() ==
+                        baselineRevisionCounts.getOrDefault(r.filename(), 0) + 2);
 
         System.out.println();
         System.out.println("========================================");
